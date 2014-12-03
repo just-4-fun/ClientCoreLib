@@ -24,7 +24,6 @@ trait FirstPriorityFeature {
 }
 
 
-
 trait AppService extends AsyncExecContextInitializer with ActivePhaseWatcher with Loggable {
 	
 	import ServicePhase._
