@@ -2,12 +2,13 @@ package just4fun.android.core.sqlite
 
 import android.content.ContentValues
 import android.database.Cursor
-import just4fun.android.core.app.{ParallelThreadFeature, App, AppService}
+import just4fun.android.core.app.{OperationStatus, ParallelThreadFeature, App, AppService}
 import android.database.sqlite.{SQLiteException, SQLiteQueryBuilder, SQLiteDatabase, SQLiteOpenHelper}
 import just4fun.android.core.async.Async._
 import just4fun.android.core.async.FutureExt
 import just4fun.android.core.utils._
 import project.config.logging.Logger._
+import OperationStatus._
 
 import scala.util.{Failure, Try, Success}
 
@@ -22,10 +23,10 @@ class DbService(val name: String = "main") extends Db with AppService with Paral
 		}
 		db = dbHelper.getWritableDatabase // SQLiteException if the database cannot be opened for writing
 	}
-	override protected def isStarted: Try[Boolean] = Success(db != null && db.isOpen)
-	override protected def onStop(): Unit = asyncExecContext.quit(true)
-	override protected def isStopped: Try[Boolean] = Success(asyncExecContext.isQuit)
-	override protected def onFinalize(): Unit = { if (isStarted != Success(false)) db.close(); db = null }
+	override protected def isStarted(operationIsOK: Boolean = operation == OK) = db != null && db.isOpen
+	override protected def onStop(operationIsOK: Boolean = operation == OK): Unit = asyncExecContext.quit(true)
+	override protected def isStopped(operationIsOK: Boolean = operation == OK) = asyncExecContext.isQuit
+	override protected def onFinalize(operationIsOK: Boolean = operation == OK): Unit = { if (isStarted()) db.close(); db = null }
 }
 
 

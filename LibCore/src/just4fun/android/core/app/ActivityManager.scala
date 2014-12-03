@@ -18,7 +18,6 @@ class ActivityManager extends ActivityLifecycleCallbacks with Loggable {
 	protected val activities = collection.mutable.WeakHashMap[Activity, Boolean]()
 	protected var state: ActivityState.Value = NONE
 	var reconfiguring = false
-	private val postId = "_onUiHide_"
 	val (aSTART_SERVICES, aVISIBLE_CHANGE, aVISIBLE_POST, aSTOP_SERVICES) = (0, 1, 2, 3)
 	
 	def apply(app: App, sManager: ServiceManager) = {
@@ -72,7 +71,7 @@ class ActivityManager extends ActivityLifecycleCallbacks with Loggable {
 		// exec action on serviceMgr
 		action match {
 			case `aSTART_SERVICES` => serviceMgr.onStart()
-			case `aVISIBLE_CHANGE` => cancelPostUI(postId); serviceMgr.onVisibilityChange()
+			case `aVISIBLE_CHANGE` => serviceMgr.onVisibilityChange()
 			case `aSTOP_SERVICES` => serviceMgr.onStop()
 			case _ =>
 		}

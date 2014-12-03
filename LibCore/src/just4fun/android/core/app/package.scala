@@ -8,8 +8,12 @@ package object app {
 		val NONE, CREATED, STARTED, RESUMED, PAUSED, STOPPED, DESTROYED = Value
 	}
 
-	object ServiceState extends Enumeration {
+	object ServicePhase extends Enumeration {
 		val INIT, INITED, START, ACTIVE, STOP, STOPPED, FINALIZED = Value
+	}
+
+	object OperationStatus extends Enumeration {
+		val OK, STOPPING, TIMEDOUT, FAILED = Value
 	}
 
 

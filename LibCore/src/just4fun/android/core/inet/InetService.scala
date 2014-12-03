@@ -21,8 +21,9 @@ object InetService {
 
 /* CLASS */
 
-abstract class InetService extends AppService with NewThreadFeature with FirstInLastOutFeature {
+abstract class InetService extends AppService with NewThreadFeature with FirstPriorityFeature {
 	import just4fun.android.core.inet.InetService._
+	import OperationStatus._
 	ID = "INET"
 	private val LONG_SPAN: Int = 60000
 	private val SHORT_SPAN: Int = 4000
@@ -49,9 +50,9 @@ abstract class InetService extends AppService with NewThreadFeature with FirstIn
 	  * @param canceled
 	  * @return
 	  */
-	def loadStringSync(opts: InetOptions, canceled: () => Boolean = () => false): Try[String] = ifActive {
+	def loadStringSync(opts: InetOptions, canceled: () => Boolean = () => false): Try[String] = Try {
 		InetRequest(opts.clone, new StreamToString, canceled).execute().get }
-	def loadBytesSync(opts: InetOptions, canceled: () => Boolean = () => false): Try[Array[Byte]] = ifActive {
+	def loadBytesSync(opts: InetOptions, canceled: () => Boolean = () => false): Try[Array[Byte]] = Try {
 		InetRequest(opts.clone, new StreamToBytes, canceled).execute().get }
 
 	def addListener(lr: OnlineStatusListener, fireNow: Boolean = true) = {
@@ -81,7 +82,7 @@ abstract class InetService extends AppService with NewThreadFeature with FirstIn
 		App().registerReceiver(receiver, new IntentFilter(ConnMgr.CONNECTIVITY_ACTION))
 		checkOnline()
 	}
-	override protected def onFinalize(): Unit = {
+	override protected def onFinalize(operationIsOK: Boolean = operation == OK): Unit = {
 		_online = false
 		listeners.clear()
 		TryNLog { App().unregisterReceiver(receiver) }

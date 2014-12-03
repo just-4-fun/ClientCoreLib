@@ -1,6 +1,6 @@
 package just4fun.android.core.app
 
-import just4fun.android.core.app.ServiceState._
+import just4fun.android.core.app.ServicePhase._
 import just4fun.android.core.utils.{TryNLog, BitState}
 import project.config.logging.Logger._
 import just4fun.android.core.async._
@@ -13,7 +13,7 @@ import scala.util.Try
 
 class AppServiceContext(serviceMgr: ServiceManager) extends AsyncExecContextInitializer with Loggable {
 
-	import ServiceState._
+	import ServicePhase._
 
 	implicit val context: AppServiceContext = this
 	protected[app] var services = mutable.LinkedHashSet[AppService]().empty
@@ -33,14 +33,13 @@ class AppServiceContext(serviceMgr: ServiceManager) extends AsyncExecContextInit
 		case s: S if s.ID == id => s
 	}
 
-	private[app] def registerService(s: AppService): Unit = {
+	private[app] def registerService(implicit s: AppService): Unit = {
 		services add s
 		wakeup()
 	}
-	private[app] def unregisterService(s: AppService): Unit = if (services remove s) s.onUnregistered
-	protected[app] def onServiceStartFailed(service: AppService, err: Throwable): Unit = {
-		// TODO ? stop instance or hint user
-		if (serviceMgr.isServiceStartFatalError(service, err)) failureOpt = Some(err)
+	protected[app] def onServiceStartFailed(err: Throwable)(implicit s: AppService): Unit = {
+		if (serviceMgr.isServiceStartFatalError(s, err)) failureOpt = Some(err)
+		// TODO ? stop instance and hint user
 	}
 
 
@@ -48,77 +47,65 @@ class AppServiceContext(serviceMgr: ServiceManager) extends AsyncExecContextInit
 
 	def start(): Unit = {
 		preInitialize()
+		// assign FirstPriorityFeature dependencies
+		val (fps, nfps) = services.partition(_.isInstanceOf[FirstPriorityFeature])
+		for (parent <- fps; child <- nfps) Dependencies.add(parent, child)
 		// reorder services in order of dependencies (parents before children)
 		services = mutable.LinkedHashSet[AppService]() ++ services.toSeq.sortBy(-_.weight)
-		// ASSIGN FiLo dependencies
-		services.withFilter(isFiLo).foreach { parent =>
-			services.withFilter(!isFiLo(_)).foreach(child => Dependencies.add(parent, child))
-		}
 		postTik()
-		// DEFs
-		def isFiLo(s: AppService) = s.isInstanceOf[FirstInLastOutFeature]
 	}
 	def stop(): Unit = {
 		stopping = true
 		// reorder services in order of dependencies (parents after children)
 		services = mutable.LinkedHashSet[AppService]() ++ services.toSeq.sortBy(_.weight)
-		// mark state STOP but wait all services to be ACTIVE
-		cancelStart()
+		services.foreach (s => if (s.context == this) s.unregister(false))
 		timeoutMs = deviceNow + App.config.timeoutDelay
 		postTik()
-		// DEFs
-		def cancelStart() = services foreach (s => if (s.context == this && s.state < ACTIVE) s.cancelStart())
 	}
-	def onVisible(yes: Boolean): Unit = services foreach (s => if (s.context == this && s.state == ACTIVE) TryNLog { s.onUiVisible(yes) })
-
+	protected[app]def onVisible(yes: Boolean): Unit = services foreach (s => if (s.context == this && s.phase == ACTIVE) TryNLog { s.onUiVisible(yes) })
+	def isVisible = serviceMgr.uiVisible
 
 	/* INTERNAL API */
 
 	def wakeup() = if (delayNextMs - deviceNow > 100) {delayNextMs = 0; postTik() }
-	protected def postTik(delayMs: Long = 0): Unit = post("TIK", delayMs) { nextState() }
+	protected def postTik(delayMs: Long = 0): Unit = post("TIK", delayMs) { tik() }
 	protected def clearTik(): Unit = {
 		delayNextMs = Long.MaxValue
 		asyncExecContext.clear()
 	}
 
-	protected def nextState(): Unit = {
-		/* TODO remove */
-		val t0 = deviceNow
-
+	protected def tik(): Unit = {
+		/* TODO remove */ val t0 = deviceNow
 		var totalN, startedN = 0
 		var changed = false
 		//
 		services foreach { s =>
 			if (s.context == this) {
-				if (s.state != s.nextState) changed = true
+				if (s.phase != s.nextPhase()) changed = true
 				totalN += 1
-				if (s.state == ACTIVE && !s.forceStop) startedN += 1
+				if (s.phase == ACTIVE && !s.isStopping) startedN += 1
 			}
-		}
-		services foreach { s =>
-			if (s.context == this && s.state == FINALIZED) unregisterService(s)
+			if (s.phase == FINALIZED) services.remove(s)
 		}
 		//
 		val finalized = totalN == 0
 		val started = !finalized && startedN == totalN
 		//
-		if (finalized) onFinalized()
+		if (finalized) finalize()
 		else if (stopping && isTimeout) onTimeout()
 		//
 		if (finalized || (started && !stopping)) clearTik()
 		else postTik(nextDelay)
-		logv("tikState", s"stopping=$stopping; all= $totalN;  total= $totalN;  started= $startedN;  time= ${deviceNow - t0 }")
+		logv("tikState", s"stopping ? $stopping; all=${services.size};  total= $totalN;  started= $startedN;  optime= ${deviceNow - t0 }")
 		//
 		// DEFs
 		//
-		def onFinalized() = {
-			// for shared (with other context) services if any
-			services foreach unregisterService
+		def finalize() = {
 			postFinalize()
 			serviceMgr.onFinalized
 		}
 		def isTimeout = if (timeoutMs > 0 && deviceNow > timeoutMs) {timeoutMs = 0; true } else false
-		def onTimeout() = services foreach (s => if (s.context == this) s.timeout())
+		def onTimeout() = services foreach (s => if (s.context == this) s.setTimedOut())
 		def nextDelay: Long = {
 			if (changed) {delayCounter = 0; delayStartMs = deviceNow }
 			val delay = if (delayCounter < 4) {delayCounter += 1; 50 * delayCounter }

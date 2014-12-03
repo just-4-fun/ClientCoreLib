@@ -7,6 +7,7 @@ import scala.Some
 import scala.util.{Failure, Success, Try}
 
 
+
 /** [[AppService]] that extends it runs its async operations in allocated parallel [[Thread]]. */
 trait ParallelThreadFeature {
 	self: AppService =>
@@ -17,47 +18,64 @@ trait NewThreadFeature {
 	self: AppService =>
 }
 
-///** [[AppService]] that extends it can be cooled down if not used for some period. */
-//trait CoolDownFeature {self: AppService =>}
-
-/** [[AppService]] that extends it starts in first turn and stops last. */
-trait FirstInLastOutFeature {
-	self: AppService =>
-}
-
-/** [[AppService]] that extends it ensures that it can start right after init.
-That is isStarted is called sequentially right after onInitialize, and if true is returned onStart is called. And service is considered Accessible. */
-trait HotStartFeature {
+/** [[AppService]] that extends it is inited before other services. So it can be used by service in init phase. */
+trait FirstPriorityFeature {
 	self: AppService =>
 }
 
 
 
-trait AppService extends AsyncExecContextInitializer with ActiveStateWatcher with Loggable {
+trait AppService extends AsyncExecContextInitializer with ActivePhaseWatcher with Loggable {
 	
-	import ServiceState._
+	import ServicePhase._
+	import OperationStatus._
 	type Config <: AnyRef
 	implicit protected[app] var context: AppServiceContext = _
 	implicit val thisService: AppService = this
-	lazy protected[app] val contexts = collection.mutable.Set[Int]().empty
-	protected var configOpt: Option[Config] = None
+	protected var config: Option[Config] = None
 	var ID: String = getClass.getSimpleName
-	private var _state: ServiceState.Value = _
-	private[this] var _started, _stopped: Try[Boolean] = Success(false)
-	protected[app] var startCanceled: Boolean = _
-	protected[app] var stopTimeout: Boolean = _
-	protected[app] var failureOpt: Option[Throwable] = None
-	lazy protected[app] val activeWatchers = collection.mutable.WeakHashMap[ActiveStateWatcher, Boolean]()
+	private var _phase: ServicePhase.Value = null
+	private[this] var _operation: OperationStatus.Value = OK
+	private[this] var _failure: Throwable = null
 	protected[app] var weight: Int = 0
-	protected[app] var forceStop = false
-	def isFailed = failureOpt.nonEmpty
-	def state: ServiceState.Value = _state
-	protected def state_=(v: ServiceState.Value): Unit = {
-		logw("STATE", s"${" " * (90 - TAG.name.length) } [$ID: ${context.hashCode.toString.takeRight(3) }]:  ${_state } >  $v")
-		_state = v
+	lazy protected[app] val activeWatchers = collection.mutable.WeakHashMap[ActivePhaseWatcher, Boolean]()
+	private[this] var _started, _stopped: Boolean = false
+	
+	
+	def phase: ServicePhase.Value = _phase
+	protected def phase_=(v: ServicePhase.Value): Unit = {
+		logw("PHASE ", s"${" " * (90 - TAG.name.length) } [$ID: ${context.hashCode.toString.takeRight(3) }]:  ${_phase } >  $v")
+		_phase = v
 	}
 	
-	
+	def operation: OperationStatus.Value = _operation
+	def failure: Option[Throwable] = Option(_failure)
+	def failure_=(err: Throwable) = {
+		_failure = err
+		_operation = FAILED
+		TryNLog { onOperationChange() }
+	}
+	final def isFailed: Boolean = _failure != null
+	final def isStopping: Boolean = _operation == STOPPING
+	final def setStopping() = {
+		_operation = STOPPING
+		TryNLog { onOperationChange() }
+	}
+	final def isTimedOut: Boolean = _operation == TIMEDOUT
+	protected[app] def setTimedOut(): Unit = if (phase < STOPPED) {
+		_operation = TIMEDOUT
+		TryNLog { onOperationChange() }
+	}
+	protected final def setStarted(): Unit = {
+		_started = true
+		context.wakeup()
+	}
+	protected final def setStopped(): Unit = {
+		_stopped = true
+		context.wakeup()
+	}
+
+
 	/* OVERRIDE */
 	
 	def stateInfo(): String = ""
@@ -65,74 +83,40 @@ trait AppService extends AsyncExecContextInitializer with ActiveStateWatcher wit
 	/* Lifecycle triggers to OVERRIDE */
 	
 	protected def onInitialize(): Unit = ()
-	protected def onStart(): Unit = isStarted = Success(true)
-	protected def onStartCancel(): Unit = ()
-	protected def isStarted: Try[Boolean] = _started
-	protected final def isStarted_=(value: Try[Boolean]): Unit = {
-		_started = value
-		context.wakeup()
-	}
+	protected def onStart(): Unit = setStarted()
+	protected def isStarted(operationIsOK: Boolean = operation == OK): Boolean = _started
+	protected def onStop(operationIsOK: Boolean = operation == OK): Unit = setStopped()
+	protected def isStopped(operationIsOK: Boolean = operation == OK): Boolean = _stopped
+	protected def onFinalize(operationIsOK: Boolean = operation == OK): Unit = ()
 	protected[app] def onUiVisible(yes: Boolean): Unit = ()
-	protected def onStop(): Unit = isStopped = Success(true)
-	protected def onStopTimeout(): Unit = ()
-	protected def isStopped: Try[Boolean] = _stopped
-	protected final def isStopped_=(value: Try[Boolean]): Unit = {
-		_stopped = value
-		context.wakeup()
+	protected def onOperationChange(): Unit = ()
+	protected def onDependencyStartFailed(implicit parent: AppService): Unit = {
+		failure = DependencyException(parent.ID, ID)
 	}
-	protected def onFinalize(): Unit = ()
-	/** Called when dependency parent is failed.
-	  @return true if service should fail.
-	  */
-	protected def onDependencyStartFailed(parent: AppService): Boolean = false
 
 	
 	
 	
 	/* INTERNAL API */
 	def register(id: String = null)(implicit _context: AppServiceContext): this.type = {
-		if (contexts add _context.hashCode()) {
-			val oldContext = context
-			context = _context
-			// CASE: repeated registration of same service instance.
-			// CAUSE: parallel service context started
-			if (oldContext != null) {
-				// reset state in case of repeated registration
-				state = _state match {
-					case null | FINALIZED => INIT // reinit
-					case STOP => TryNLog {
-						onStopTimeout()
-						isStopped match {
-							case Success(true) => INITED // restart
-							case _ => onFinalize(); INIT // reinit
-						}
-					}.getOrElse { TryNLog { onFinalize() }; INIT }
-					case STOPPED => INITED // restart
-					case _ => _state
-				}
-				//
-				// remove child dependencies to let old parent stop
-				// WARN: the problem can arise when parent is not shared and service is started. After switch context it tries to use parent from new context which may be not yet started.
-				Dependencies.remove((parent, child) => child == this)
+		if (context != _context) {
+			val sharedStart = context != null
+			if (sharedStart) {
+				if (phase <= ACTIVE && isStopping) _operation = OK
+				else if (phase == STOP) setTimedOut()
 			}
-			else state = INIT
-			//
-			startCanceled = false
-			stopTimeout = false
-			failureOpt = None
-			_started = Success(false)
-			_stopped = Success(false)
-			forceStop = false
-			context.registerService(this)
+			nextPhase(sharedStart)(_context)
 		}
 		if (id != null) ID = id
 		this
 	}
 	def config(conf: Config): this.type = {
-		configOpt = Option(conf)
+		register()
+		config = Option(conf)
 		this
 	}
 	def dependsOn(services: AppService*)(implicit context: AppServiceContext): this.type = {
+		register()
 		services.foreach { s =>
 			s.register() // no way to forget register
 			Dependencies.add(s, this)
@@ -140,116 +124,114 @@ trait AppService extends AsyncExecContextInitializer with ActiveStateWatcher wit
 		this
 	}
 	def watch(services: AppService*)(implicit context: AppServiceContext): this.type = {
+		register()
 		services.foreach { s =>
 			s.register() // no way to forget register
 			activeWatchers += (s -> true)
 		}
 		this
 	}
-	def unregister() = {
-		forceStop = true
-		context.wakeup()
+	def unregister(wakeContext: Boolean = true) = {
+		setStopping()
+		if (wakeContext) context.wakeup()
 	}
-	protected[app] def cancelStart(): Unit = if (state == START) TryNLog { startCanceled = true; onStartCancel() }
-	protected[app] def timeout(): Unit = if (state < STOPPED) TryNLog { stopTimeout = true; onStopTimeout() }
-	protected[app] def onUnregistered(implicit cxt: AppServiceContext): Unit = {
-		contexts.remove(cxt.hashCode())
-		Dependencies.remove((parent, child) => parent == this || child == this)
-	}
-	//	protected def isShared: Boolean = contexts.size > 1
-	//	protected[app] def garbage = contexts.isEmpty
-	override def toString: String = s"[$ID]"
+	override def toString: String = ID
 
 
 
 
 	/* STATE MACHINE */
 
-	protected[app] final def nextState: ServiceState.Value = {
-		//
-		// EXECUTE
-		//
-		state match {
+	protected[app] final def nextPhase(sharedStart: Boolean = false)(implicit _context: AppServiceContext): ServicePhase.Value = {
+		phase match {
+			case null | FINALIZED => register
 			case INIT => initialise
 			case INITED => start
 			case START => started
 			case ACTIVE => stop
 			case STOP => stopped
 			case STOPPED => finalise
-			case FINALIZED =>
-			case _ => loge(msg = s"AppService $ID seems not registered: ")
+		}
+		//
+		if (sharedStart) {
+			if (phase <= ACTIVE) reset
+			else if (phase < FINALIZED) finalise
+			if (phase == FINALIZED) register
 		}
 		//
 		// DEFs
 		//
+		def register = {
+			context = _context
+			phase = INIT
+			context.registerService
+		}
 		def initialise = trying {
-			state = INITED
+			phase = INITED
 			preInitialize()
 			onInitialize()
-			if (isInstanceOf[HotStartFeature]) {
-				isStarted match {case Success(true) => start; case _ => }
-			}
+			if (isInstanceOf[FirstPriorityFeature]) start
 		}
-		def start = if (parentsAlive && parentsActive) trying {
-			state = START
+		def start = if (parentsStarted) trying {
+			phase = START
 			onStart()
 			started
 		}
-		def parentsAlive = {
-			Dependencies.withParents(_.state > ACTIVE) { parent =>
-				if (onDependencyStartFailed(parent)) fail(DependencyException(parent.ID, ID))
-			}
-			!isFailed
-		}
-		def parentsActive = Dependencies.hasNoParent { _.state != ACTIVE }
+		def parentsStarted = Dependencies.hasNoParent { _.phase != ACTIVE }
 		def started: Boolean = trying {
-			isStarted match {
-				case Success(true) => state = ACTIVE
-				case Success(false) if stopTimeout => fail(TimeoutException)
-				case Failure(ex) => fail(ex)
-				case _ =>
-			}
-			triggerActiveState()
-			state == ACTIVE
+			if (isStarted()) phase = ACTIVE
+			else if (isTimedOut) throw TimeoutException
+			if (phase == ACTIVE) {
+				triggerActivePhase()
+				if (context.isVisible) onUiVisible(true)
+				true
+			} else false
 		}
-		def stop = if (mayStop && childrenStopped) trying {
-			triggerActiveState(beforeStop = true)
-			state = STOP
+		def stop = if (isStopping && childrenStopped) trying {
+			triggerActivePhase(beforeStop = true)
+			phase = STOP
 			onStop()
 			stopped
 		}
-		def mayStop = context.stopping || forceStop
-		def childrenStopped = Dependencies.hasNoChild { _.state < STOPPED }
+		def childrenStopped = Dependencies.hasNoChild { _.phase < STOPPED }
 		def stopped: Boolean = trying {
-			isStopped match {
-				case Success(true) => state = STOPPED
-				case Success(false) if stopTimeout => fail(TimeoutException)
-				case Failure(ex) => fail(ex)
-				case _ =>
-			}
-			state == STOPPED
+			if (isStopped()) phase = STOPPED
+			else if (isTimedOut) throw TimeoutException
+			phase == STOPPED
 		}
-		def finalise = trying {
-			state = FINALIZED
-			trying { onFinalize() }
+		def trying[T](code: => T): T = try {if (isFailed) throw _failure else code} catch {
+			case err: Throwable =>
+				loge(err, s"AppService [$ID] in state [$phase] failed. ")
+				failure = err
+				if (phase < ACTIVE) {
+					Dependencies.foreach { entry => if (entry._1 == this) TryNLog { entry._2.onDependencyStartFailed } }
+					context.onServiceStartFailed(_failure)
+				}
+				finalise
+				null.asInstanceOf[T]
+		}
+		def finalise = {
+			phase = FINALIZED
+			TryNLog { onFinalize() }
+			recycle
+		}
+		def recycle = {
+			TryNLog { postFinalize() }
+			_operation = OK
+			_started = false
+			_stopped = false
+			_failure = null
+			config = None
 			context = null
-			configOpt = None
+			weight = 0
+			Dependencies.remove((parent, child) => parent == this || child == this)
 			activeWatchers.clear()
-			postFinalize()
 		}
-		def fail(err: Throwable) = {
-			loge(err, s"AppService [$ID] in state [$state] failed. ")
-			if (!isFailed) {
-				failureOpt = Option(err)
-				val prevState = state
-				if (prevState == START || prevState == ACTIVE) trying(onStop())
-				if (prevState < FINALIZED) finalise
-				if (prevState < ACTIVE) context.onServiceStartFailed(this, err)
-			}
+		def reset: Unit = {
+			Dependencies.remove((parent, child) => child == this || (phase == ACTIVE && parent == this))
 		}
-		def trying[T](code: => T): T = try {code} catch {case err: Throwable => fail(err); null.asInstanceOf[T] }
 		//
-		state
+		phase
 	}
 	
 	
@@ -262,19 +244,19 @@ trait AppService extends AsyncExecContextInitializer with ActiveStateWatcher wit
 
 	/** Service functionality should be wrapped in this method to avoid access to service while it is not started. */
 	def ifActive[R](code: => R): Try[R] =
-		if (state == ACTIVE) try {Success(code)} catch {case e: Throwable => Failure(e) }
-		else Failure(ServiceNotActiveException(ID, state.toString))
+		if (phase == ACTIVE) try {Success(code)} catch {case e: Throwable => Failure(e) }
+		else Failure(ServiceNotActiveException(ID, phase.toString))
 	
 	/** Registers watcher of [[ACTIVE]] state change of service.
 	@param watcher receives onServiceStarted event
 	  */
-	def watchActiveState(watcher: ActiveStateWatcher): Unit = if (state <= ACTIVE) {
+	def watchActivePhase(watcher: ActivePhaseWatcher): Unit = if (phase <= ACTIVE) {
 		activeWatchers += (watcher -> true)
-		triggerActiveState(false, watcher)
+		triggerActivePhase(false, watcher)
 	}
 	
 	/** Triggers [[ACTIVE]] state change of service. */
-	protected def triggerActiveState(beforeStop: Boolean = false, specific: ActiveStateWatcher = null): Unit = if (state == ACTIVE) {
+	protected def triggerActivePhase(beforeStop: Boolean = false, specific: ActivePhaseWatcher = null): Unit = if (phase == ACTIVE) {
 		val watchers = if (specific == null) activeWatchers.map(_._1) else List(specific)
 		watchers foreach { w =>
 			val keepWatching = Try { w.onServiceActive(this, beforeStop) }.getOrElse(false)
@@ -288,7 +270,7 @@ trait AppService extends AsyncExecContextInitializer with ActiveStateWatcher wit
 
 
 /* SERVICE AVAILABILITY WATCHER */
-trait ActiveStateWatcher {
+trait ActivePhaseWatcher {
 	/** Is called when Service started (state = STARTED) or inaccessible (state >= STOP).
 	  * @param service Service that state is watched
 	  * @param  justBeforeStop true - if service is just before stopping. It's last chance to use it; false - if just started
