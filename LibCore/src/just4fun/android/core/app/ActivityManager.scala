@@ -19,7 +19,7 @@ class ActivityManager extends ActivityLifecycleCallbacks with Loggable {
 	protected var state: ActivityState.Value = NONE
 	var reconfiguring = false
 	val (aSTART_SERVICES, aVISIBLE_CHANGE, aVISIBLE_POST, aSTOP_SERVICES) = (0, 1, 2, 3)
-	
+
 	def apply(app: App, sManager: ServiceManager) = {
 		this.app = app
 		serviceMgr = sManager
@@ -32,12 +32,9 @@ class ActivityManager extends ActivityLifecycleCallbacks with Loggable {
 		else serviceMgr.onStop(true)
 	}
 	/** Called when all instances have finalized */
-	def onExited(): Boolean = {
-		app.onExited()
-		activity.isEmpty || activity().isFinishing
-	}
-	
-	
+	def isExited(): Boolean = activity.isEmpty || activity().isFinishing
+
+
 	override protected def onActivityCreated(a: Activity, savedState: Bundle): Unit = onStateChange(a, CREATED)
 	override protected def onActivityStarted(a: Activity): Unit = onStateChange(a, STARTED)
 	override protected def onActivityResumed(a: Activity): Unit = onStateChange(a, RESUMED)
@@ -45,7 +42,7 @@ class ActivityManager extends ActivityLifecycleCallbacks with Loggable {
 	override protected def onActivityStopped(a: Activity): Unit = onStateChange(a, STOPPED)
 	override protected def onActivityDestroyed(a: Activity): Unit = onStateChange(a, DESTROYED)
 	override protected def onActivitySaveInstanceState(a: Activity, savedState: Bundle): Unit = ()
-	
+
 	protected def onStateChange(a: Activity, newStt: ActivityState.Value): Unit = {
 		var action = -1
 		newStt match {
@@ -70,8 +67,8 @@ class ActivityManager extends ActivityLifecycleCallbacks with Loggable {
 		val reason = if (a.isFinishing) "finishing" else if (reconfiguring) "reconfiguring" else ""
 		// exec action on serviceMgr
 		action match {
-			case `aSTART_SERVICES` => serviceMgr.onStart()
 			case `aVISIBLE_CHANGE` => serviceMgr.onVisibilityChange()
+			case `aSTART_SERVICES` => serviceMgr.onStart()
 			case `aSTOP_SERVICES` => serviceMgr.onStop()
 			case _ =>
 		}

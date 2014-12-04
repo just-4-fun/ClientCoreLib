@@ -11,18 +11,17 @@ import scala.collection.mutable
 import scala.util.Try
 
 
-class AppServiceContext(serviceMgr: ServiceManager) extends AsyncExecContextInitializer with Loggable {
+class AppServiceContainer(serviceMgr: ServiceManager) extends AsyncExecContextInitializer with Loggable {
 
 	import ServicePhase._
 
-	implicit val context: AppServiceContext = this
+	implicit val thisContainer: AppServiceContainer = this
 	protected[app] var services = mutable.LinkedHashSet[AppService]().empty
 	protected var timeoutMs: Long = _
 	var stopping = false
 	protected[app] var failureOpt: Option[Throwable] = None
 	def isFailed = failureOpt.nonEmpty
-	lazy private[app] val name = context.hashCode.toString.takeRight(3)
-	var delayCounter = 0
+	lazy private[app] val name = hashCode.toString.takeRight(3)
 	var delayStartMs = deviceNow
 	var delayNextMs = 0L
 
@@ -58,11 +57,11 @@ class AppServiceContext(serviceMgr: ServiceManager) extends AsyncExecContextInit
 		stopping = true
 		// reorder services in order of dependencies (parents after children)
 		services = mutable.LinkedHashSet[AppService]() ++ services.toSeq.sortBy(_.weight)
-		services.foreach (s => if (s.context == this) s.unregister(false))
+		services.foreach (s => if (s.container == this) s.unregister(false))
 		timeoutMs = deviceNow + App.config.timeoutDelay
 		postTik()
 	}
-	protected[app]def onVisible(yes: Boolean): Unit = services foreach (s => if (s.context == this && s.phase == ACTIVE) TryNLog { s.onUiVisible(yes) })
+	protected[app]def onVisible(yes: Boolean): Unit = services foreach (s => if (s.container == this && s.phase == ACTIVE) TryNLog { s.onUiVisible(yes) })
 	def isVisible = serviceMgr.uiVisible
 
 	/* INTERNAL API */
@@ -80,7 +79,7 @@ class AppServiceContext(serviceMgr: ServiceManager) extends AsyncExecContextInit
 		var changed = false
 		//
 		services foreach { s =>
-			if (s.context == this) {
+			if (s.container == this) {
 				if (s.phase != s.nextPhase()) changed = true
 				totalN += 1
 				if (s.phase == ACTIVE && !s.isStopping) startedN += 1
@@ -105,14 +104,14 @@ class AppServiceContext(serviceMgr: ServiceManager) extends AsyncExecContextInit
 			serviceMgr.onFinalized
 		}
 		def isTimeout = if (timeoutMs > 0 && deviceNow > timeoutMs) {timeoutMs = 0; true } else false
-		def onTimeout() = services foreach (s => if (s.context == this) s.setTimedOut())
+		def onTimeout() = services foreach (s => if (s.container == this) s.setTimedOut())
 		def nextDelay: Long = {
-			if (changed) {delayCounter = 0; delayStartMs = deviceNow }
-			val delay = if (delayCounter < 4) {delayCounter += 1; 50 * delayCounter }
+			val delay = if (changed) {delayStartMs = deviceNow; 50}
 			else {
 				val mult = if (stopping) 2 else 1
 				val time = deviceNow - delayStartMs
-				if (time < 2000) 250 * mult
+				if (time < 500) 100 * mult
+				else if (time < 2000) 250 * mult
 				else if (time < 10000) 1000 * mult
 				else if (time < 60000) 4000 * mult
 				else 10000

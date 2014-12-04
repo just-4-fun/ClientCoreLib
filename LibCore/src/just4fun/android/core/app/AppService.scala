@@ -29,11 +29,11 @@ trait AppService extends AsyncExecContextInitializer with ActivePhaseWatcher wit
 	import ServicePhase._
 	import OperationStatus._
 	type Config <: AnyRef
-	implicit protected[app] var context: AppServiceContext = _
+	implicit protected[app] var container: AppServiceContainer = _
 	implicit val thisService: AppService = this
 	protected var config: Option[Config] = None
 	var ID: String = getClass.getSimpleName
-	private var _phase: ServicePhase.Value = null
+	private var _phase: ServicePhase.Value = NONE
 	private[this] var _operation: OperationStatus.Value = OK
 	private[this] var _failure: Throwable = null
 	protected[app] var weight: Int = 0
@@ -43,35 +43,35 @@ trait AppService extends AsyncExecContextInitializer with ActivePhaseWatcher wit
 	
 	def phase: ServicePhase.Value = _phase
 	protected def phase_=(v: ServicePhase.Value): Unit = {
-		logw("PHASE ", s"${" " * (90 - TAG.name.length) } [$ID: ${context.hashCode.toString.takeRight(3) }]:  ${_phase } >  $v")
+		logw("PHASE ", s"${" " * (90 - TAG.name.length) } [$ID: ${container.hashCode.toString.takeRight(3) }]:  ${_phase } >  $v")
 		_phase = v
 	}
 	
 	def operation: OperationStatus.Value = _operation
 	def failure: Option[Throwable] = Option(_failure)
-	def failure_=(err: Throwable) = {
+	def failure_=(err: Throwable) = if (_failure == null) {
 		_failure = err
 		_operation = FAILED
 		TryNLog { onOperationChange() }
 	}
 	final def isFailed: Boolean = _failure != null
 	final def isStopping: Boolean = _operation == STOPPING
-	final def setStopping() = {
+	final def setStopping() = if (_operation < STOPPING) {
 		_operation = STOPPING
 		TryNLog { onOperationChange() }
 	}
 	final def isTimedOut: Boolean = _operation == TIMEDOUT
-	protected[app] def setTimedOut(): Unit = if (phase < STOPPED) {
+	protected[app] def setTimedOut(): Unit = if (phase < STOPPED && _operation < TIMEDOUT) {
 		_operation = TIMEDOUT
 		TryNLog { onOperationChange() }
 	}
 	protected final def setStarted(): Unit = {
 		_started = true
-		context.wakeup()
+		container.wakeup()
 	}
 	protected final def setStopped(): Unit = {
 		_stopped = true
-		context.wakeup()
+		container.wakeup()
 	}
 
 
@@ -97,14 +97,12 @@ trait AppService extends AsyncExecContextInitializer with ActivePhaseWatcher wit
 	
 	
 	/* INTERNAL API */
-	def register(id: String = null)(implicit _context: AppServiceContext): this.type = {
-		if (context != _context) {
-			val sharedStart = context != null
-			if (sharedStart) {
-				if (phase <= ACTIVE && isStopping) _operation = OK
-				else if (phase == STOP) setTimedOut()
-			}
-			nextPhase(sharedStart)(_context)
+	def register(id: String = null)(implicit _container: AppServiceContainer): this.type = {
+		if (container != _container) {
+			if (phase <= ACTIVE && isStopping) _operation = OK
+			else if (phase == STOP) setTimedOut()
+			nextPhase(container != null)(_container)
+			if (container.stopping) setStopping()
 		}
 		if (id != null) ID = id
 		this
@@ -114,7 +112,7 @@ trait AppService extends AsyncExecContextInitializer with ActivePhaseWatcher wit
 		config = Option(conf)
 		this
 	}
-	def dependsOn(services: AppService*)(implicit context: AppServiceContext): this.type = {
+	def dependsOn(services: AppService*)(implicit container: AppServiceContainer): this.type = {
 		register()
 		services.foreach { s =>
 			s.register() // no way to forget register
@@ -122,7 +120,7 @@ trait AppService extends AsyncExecContextInitializer with ActivePhaseWatcher wit
 		}
 		this
 	}
-	def watch(services: AppService*)(implicit context: AppServiceContext): this.type = {
+	def watch(services: AppService*)(implicit container: AppServiceContainer): this.type = {
 		register()
 		services.foreach { s =>
 			s.register() // no way to forget register
@@ -130,9 +128,9 @@ trait AppService extends AsyncExecContextInitializer with ActivePhaseWatcher wit
 		}
 		this
 	}
-	def unregister(wakeContext: Boolean = true) = {
+	def unregister(wakeContainer: Boolean = true) = {
 		setStopping()
-		if (wakeContext) context.wakeup()
+		if (wakeContainer) container.wakeup()
 	}
 	override def toString: String = ID
 
@@ -141,9 +139,9 @@ trait AppService extends AsyncExecContextInitializer with ActivePhaseWatcher wit
 
 	/* STATE MACHINE */
 
-	protected[app] final def nextPhase(sharedStart: Boolean = false)(implicit _context: AppServiceContext): ServicePhase.Value = {
+	protected[app] final def nextPhase(sharedStart: Boolean = false)(implicit _container: AppServiceContainer): ServicePhase.Value = {
 		phase match {
-			case null | FINALIZED => register
+			case NONE | FINALIZED => register
 			case INIT => initialise
 			case INITED => start
 			case START => started
@@ -161,9 +159,9 @@ trait AppService extends AsyncExecContextInitializer with ActivePhaseWatcher wit
 		// DEFs
 		//
 		def register = {
-			context = _context
+			container = _container
 			phase = INIT
-			context.registerService
+			container.registerService
 		}
 		def initialise = trying {
 			phase = INITED
@@ -182,7 +180,7 @@ trait AppService extends AsyncExecContextInitializer with ActivePhaseWatcher wit
 			else if (isTimedOut) throw TimeoutException
 			if (phase == ACTIVE) {
 				triggerActivePhase()
-				if (context.isVisible) onUiVisible(true)
+				if (container.isVisible) onUiVisible(true)
 				true
 			} else false
 		}
@@ -204,7 +202,7 @@ trait AppService extends AsyncExecContextInitializer with ActivePhaseWatcher wit
 				failure = err
 				if (phase < ACTIVE) {
 					Dependencies.foreach { entry => if (entry._1 == this) TryNLog { entry._2.onDependencyStartFailed } }
-					context.onServiceStartFailed(_failure)
+					if (!isStopping) container.onServiceStartFailed(_failure)
 				}
 				finalise
 				null.asInstanceOf[T]
@@ -221,7 +219,7 @@ trait AppService extends AsyncExecContextInitializer with ActivePhaseWatcher wit
 			_stopped = false
 			_failure = null
 			config = None
-			context = null
+			container = null
 			weight = 0
 			Dependencies.remove((parent, child) => parent == this || child == this)
 			activeWatchers.clear()

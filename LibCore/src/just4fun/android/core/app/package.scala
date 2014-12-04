@@ -9,7 +9,7 @@ package object app {
 	}
 
 	object ServicePhase extends Enumeration {
-		val INIT, INITED, START, ACTIVE, STOP, STOPPED, FINALIZED = Value
+		val NONE, INIT, INITED, START, ACTIVE, STOP, STOPPED, FINALIZED = Value
 	}
 
 	object OperationStatus extends Enumeration {
