@@ -2,6 +2,8 @@ package just4fun.android.core
 
 package object app {
 
+	// Is assigned inside App when instance is created
+	var appInstance: App = _
 
 	/* STATES */
 	object ActivityState extends Enumeration {
@@ -13,7 +15,7 @@ package object app {
 	}
 
 	object OperationStatus extends Enumeration {
-		val OK, STOPPING, TIMEDOUT, FAILED = Value
+		val NORMAL, FINISHING, TIMEDOUT, FAILED = Value
 	}
 
 

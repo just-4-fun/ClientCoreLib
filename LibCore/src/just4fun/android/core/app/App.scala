@@ -1,33 +1,72 @@
 package just4fun.android.core.app
 
 import android.app.Application
+import android.content.pm.PackageManager
+import just4fun.android.core.app
 import just4fun.android.core.persist.IntVar
 import project.config.logging.Logger._
 import android.content.Context
 
-object App {
 
-	var app: App = _
-	val activityMgr: ActivityManager = new ActivityManager
-	val serviceMgr: ServiceManager = new ServiceManager
+/* GLOBAL ACCESSOR */
 
-	private def init(a: App) {
-		app = a
-		logw("", s"${" " * (60 - 3) }   >   APP  CREATED  #${app.hashCode() }")
-		serviceMgr(app, activityMgr)
-		activityMgr(app, serviceMgr)
-		app.registerActivityLifecycleCallbacks(activityMgr)
+object App extends AppSingleton[App]
+
+
+
+abstract class AppSingleton[T <: App] {
+	// WARN: throws error if T is not an  Application subclass declared in Manifest.xml.
+	private lazy val app: T = just4fun.android.core.app.appInstance.asInstanceOf[T]
+	def apply(): T = app
+}
+
+
+
+
+/* APP class */
+
+abstract class App extends Application with AppConfig with Loggable /*TODO with Inet with Db etc*/ {
+
+	just4fun.android.core.app.appInstance = this
+	// set thread pool [[async.NewThreadContext]]
+	just4fun.android.core.async.threadPoolExecutor = threadPoolExecutor
+
+	private var activityMgr: ActivityManager = _
+	private var serviceMgr: ServiceManager = _
+	private var wasKilled = false
+
+
+	/* INTERNALS */
+
+	override protected def onCreate(): Unit = {
+		activityMgr = new ActivityManager
+		serviceMgr = new ServiceManager
+		serviceMgr.init(this, activityMgr)
+		activityMgr.init(serviceMgr)
+		registerActivityLifecycleCallbacks(activityMgr)
+		// check if last session was killed. and reset mark
+		val killedMark = IntVar("_killedMark")
+		wasKilled = killedMark.get() == 1
+		if (!wasKilled) killedMark ~ 1
+		logw("", s"${" " * (60 - 3) }   >   APP  CREATED  #${hashCode() };  WAS KILLED ? $wasKilled")
+	}
+	private[app] def finalise() = {
+		onExited()
+		wasKilled = false
+		IntVar("_killedMark") ~ 0
 	}
 
-	/* PUBLIC USAGE */
 
-	def apply(): Context = app
 
-	def config: AppConfig = app
 
-	def start() = serviceMgr.onStart()
+	/* PUBLIC API */
+
+	def start() = serviceMgr.start()
 	def isActive = serviceMgr.active
+	def hasUI: Boolean = activityMgr.hasUI
+	def isUiVsible: Boolean = activityMgr.isVisible
 	def exit() = activityMgr.exit()
+	def isExited = serviceMgr.isExited
 
 	def findService[S <: AppService](id: String)(implicit cxt: AppServiceContainer = null): Option[S] = {
 		val _cxt = if (cxt == null) ServiceManager.activeContainer else cxt
@@ -37,48 +76,11 @@ object App {
 		findService[S](id)(cxt).foreach(s => f(s))
 	}
 
-	def wasKilled = app.wasKilled
-
-}
+	def wasLastSessionKilled = wasKilled
 
 
-abstract class App extends Application with AppConfig with Loggable /*TODO with Inet with Db etc*/ {
+	/* UTILS */
 
-	override def onCreate(): Unit = {
-		App.init(this)
-		wasKilled
-		logv("APP", s"WAS KILLED ? $wasKilled")
-	}
-
-
-	/** The place to register services */
-	def onRegisterServices(implicit context: AppServiceContainer): Unit
-	/**
-	 * @param service
-	 * @return true - if error is fatal and App will be set in FAILED state; false - if App should continue
-	 */
-	def isServiceStartFatalError(service: AppService, err: Throwable): Boolean = {
-		logv("onServiceStartFailed", s"${service.ID };  Error: ${err.getMessage }")
-		service match {
-			case _ => false // decide fail App or not
-		}
-	}
-	/**
-	  */
-	def onExited(): Unit = ()
-
-
-	/* INTERNAL */
-
-	private lazy val wasKilled = {
-		val killedMark = IntVar("_killedMark")
-		val killed = killedMark.get() == 1
-		if (!killed) killedMark ~ 1
-		killed
-	}
-	private[app] def exited() = {
-		onExited()
-		IntVar("_killedMark") ~ 0
-	}
+	def hasPermission(prm: String): Boolean = getPackageManager.checkPermission(prm, getPackageName) == PackageManager.PERMISSION_GRANTED
 
 }

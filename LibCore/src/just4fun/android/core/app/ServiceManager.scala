@@ -18,18 +18,16 @@ class ServiceManager extends Loggable {
 	var app: App = _
 	var activityMgr: ActivityManager = _
 	lazy protected val containers = collection.mutable.Set[AppServiceContainer]()
-	var uiVisible = false
-
-	def apply(app: App, aManager: ActivityManager) = {
-		this.app = app;
+	
+	def init(app: App, aManager: ActivityManager) = {
+		this.app = app
 		activityMgr = aManager
 	}
 	def active = activeContainer != null
 	
 	/* LIFE CYCLE */
 	
-	def onStart(): Unit = if (!active) {
-		uiVisible = activityMgr.isVisible
+	def start(): Unit = if (!active) {
 		KeepAliveService.initialize(app)
 		activeContainer = new AppServiceContainer(this)
 		logw("", s"${containerName() }   >   APP  START")
@@ -37,33 +35,28 @@ class ServiceManager extends Loggable {
 		app.onRegisterServices(activeContainer)
 		activeContainer.start()
 	}
-	def onVisibilityChange(): Unit = {
-		val changed = uiVisible != activityMgr.isVisible
-		if (changed) uiVisible = !uiVisible
-		if (changed && active) {
-			logw("APP", s"${containerName() }   >   APP  VISIBLE= $uiVisible")
-			activeContainer.onVisible(uiVisible)
-		}
-	}
-	def onStop(force: Boolean = false): Unit =
-		if (active && !activeContainer.stopping && (force || activeContainer.isFailed || !app.liveAfterStop)) {
+	def onVisibilityChange(visible: Boolean): Unit = if (active && !activeContainer.finishing) activeContainer.onVisibilityChange(visible)
+	def finish(force: Boolean = false): Unit =
+		if (active && !activeContainer.finishing && (force || activeContainer.isFailed || !app.liveAfterStop)) {
 			logw("APP", s"${containerName() }   >   APP  STOP")
-			activeContainer.stop()
-			if (!app.liveAfterStop && !app.singleInstance) activeContainer = null
+			activeContainer.finish()
+			if (!app.liveAfterStop) activeContainer = null
 		}
 	def onFinalized(implicit container: AppServiceContainer): Unit = {
 		containers.remove(container)
 		if (container == activeContainer) activeContainer = null
 		logw("APP", s"${containerName(container) }   >  APP  FINALIZED           containers.size = ${containers.size };  active ? $active")
 		if (containers.isEmpty) {
-			if (Dependencies.nonEmpty) loge(msg = s"Dependencies must be empty. Actually contains > ${Dependencies.mkString(", ") }")
-			Dependencies.clear()
-			if (activityMgr.isExited()) {
-				app.exited()
-				KeepAliveService.finalise()
+			if (Dependencies.nonEmpty) {
+				loge(msg = s"Dependencies must be empty. Actually contains > ${Dependencies.mkString(", ") }")
+				Dependencies.clear()
 			}
-			else onStart()
 			logw("APP", s"${" " * 20 }   >   APP  READY TO DIE")
+			if (activityMgr.isExited) {
+				KeepAliveService.finalise()
+				app.finalise()
+			}
+			else start()
 		}
 		System.gc()
 	}
@@ -71,7 +64,8 @@ class ServiceManager extends Loggable {
 		TryNLog { app.isServiceStartFatalError(service, err) }.getOrElse(true)
 		// TODO tell UI
 	}
-
+	def isExited = containers.isEmpty
+	
 	private def containerName(cxt: AppServiceContainer = activeContainer) = s"${" " * (50 - cxt.name.length) }[CXT: ${cxt.name }]"
 }
 

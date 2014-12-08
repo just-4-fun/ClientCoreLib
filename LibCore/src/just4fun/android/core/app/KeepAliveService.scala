@@ -22,10 +22,10 @@ class KeepAliveService extends Service {
 	}
 	override def onStartCommand(intent: Intent, flags: Int, startId: Int): Int = {
 		val action = if (intent != null) intent.getAction else "RECREATED"
-		logv("onStartCommand", s"intent: $action;  wasKilled= ${App.wasKilled}")
+		logv("onStartCommand", s"intent: $action;  wasKilled= ${App().wasLastSessionKilled}")
 		// 'intent = null' indicates recreating after kill
-		if (!App.isActive && App.wasKilled && intent == null && App.config.resumeAfterKill) App.start()
-		if (App.config.resumeAfterKill) Service.START_STICKY else Service.START_NOT_STICKY
+		if (App().isExited && App().wasLastSessionKilled && intent == null && App().resumeAfterKill) App().start()
+		if (App().resumeAfterKill) Service.START_STICKY else Service.START_NOT_STICKY
 	}
 	override def onBind(intent: Intent): IBinder = null
 }

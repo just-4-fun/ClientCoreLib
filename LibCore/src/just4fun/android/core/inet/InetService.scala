@@ -82,7 +82,7 @@ abstract class InetService extends AppService with NewThreadFeature with FirstPr
 		App().registerReceiver(receiver, new IntentFilter(ConnMgr.CONNECTIVITY_ACTION))
 		checkOnline()
 	}
-	override protected def onFinalize(operationIsOK: Boolean = operation == OK): Unit = {
+	override protected def onFinalize(operationIsOK: Boolean = operation <= FINISHING): Unit = {
 		_online = false
 		listeners.clear()
 		TryNLog { App().unregisterReceiver(receiver) }

@@ -18,12 +18,12 @@ class AppServiceContainer(serviceMgr: ServiceManager) extends AsyncExecContextIn
 	implicit val thisContainer: AppServiceContainer = this
 	protected[app] var services = mutable.LinkedHashSet[AppService]().empty
 	protected var timeoutMs: Long = _
-	var stopping = false
-	protected[app] var failureOpt: Option[Throwable] = None
-	def isFailed = failureOpt.nonEmpty
+	var finishing = false
 	lazy private[app] val name = hashCode.toString.takeRight(3)
 	var delayStartMs = deviceNow
 	var delayNextMs = 0L
+	protected[app] var failureOpt: Option[Throwable] = None
+	def isFailed = failureOpt.nonEmpty
 
 
 	/* SERVICE MANAGMENT */
@@ -36,7 +36,7 @@ class AppServiceContainer(serviceMgr: ServiceManager) extends AsyncExecContextIn
 		services add s
 		wakeup()
 	}
-	protected[app] def onServiceStartFailed(err: Throwable)(implicit s: AppService): Unit = {
+	protected[app] def onServiceStartFailed(err: Throwable)(implicit s: AppService): Unit = if (!finishing) {
 		if (serviceMgr.isServiceStartFatalError(s, err)) failureOpt = Some(err)
 		// TODO ? stop instance and hint user
 	}
@@ -53,22 +53,24 @@ class AppServiceContainer(serviceMgr: ServiceManager) extends AsyncExecContextIn
 		services = mutable.LinkedHashSet[AppService]() ++ services.toSeq.sortBy(-_.weight)
 		postTik()
 	}
-	def stop(): Unit = {
-		stopping = true
+	def finish(): Unit = {
+		finishing = true
 		// reorder services in order of dependencies (parents after children)
 		services = mutable.LinkedHashSet[AppService]() ++ services.toSeq.sortBy(_.weight)
 		services.foreach (s => if (s.container == this) s.unregister(false))
-		timeoutMs = deviceNow + App.config.timeoutDelay
+		timeoutMs = deviceNow + App().timeoutDelay
 		postTik()
 	}
-	protected[app]def onVisible(yes: Boolean): Unit = services foreach (s => if (s.container == this && s.phase == ACTIVE) TryNLog { s.onUiVisible(yes) })
-	def isVisible = serviceMgr.uiVisible
+	protected[app]def onVisibilityChange(visible: Boolean): Unit = services foreach { s =>
+		if (s.phase == ACTIVE) TryNLog { s.onVisibilityChange(visible) }
+	}
+
 
 	/* INTERNAL API */
 
-	def wakeup() = if (delayNextMs - deviceNow > 100) {delayNextMs = 0; postTik() }
 	protected def postTik(delayMs: Long = 0): Unit = post("TIK", delayMs) { tik() }
-	protected def clearTik(): Unit = {
+	protected[app] def wakeup() = if (delayNextMs - deviceNow > 100) {delayNextMs = 0; postTik() }
+	protected def sleep(): Unit = {
 		delayNextMs = Long.MaxValue
 		asyncExecContext.clear()
 	}
@@ -80,9 +82,9 @@ class AppServiceContainer(serviceMgr: ServiceManager) extends AsyncExecContextIn
 		//
 		services foreach { s =>
 			if (s.container == this) {
-				if (s.phase != s.nextPhase()) changed = true
+				if (s.nextPhase()) changed = true
 				totalN += 1
-				if (s.phase == ACTIVE && !s.isStopping) startedN += 1
+				if (s.phase == ACTIVE && !s.isFinishing) startedN += 1
 			}
 			if (s.phase == FINALIZED) services.remove(s)
 		}
@@ -91,11 +93,11 @@ class AppServiceContainer(serviceMgr: ServiceManager) extends AsyncExecContextIn
 		val started = !finalized && startedN == totalN
 		//
 		if (finalized) finalize()
-		else if (stopping && isTimeout) onTimeout()
+		else if (finishing && isTimeout) {changed = true; onTimeout()}
 		//
-		if (finalized || (started && !stopping)) clearTik()
+		if (finalized || (started && !finishing)) sleep()
 		else postTik(nextDelay)
-		logv("tikState", s"stopping ? $stopping; all=${services.size};  total= $totalN;  started= $startedN;  optime= ${deviceNow - t0 }")
+		logv("tikState", s"stopping ? $finishing; all=${services.size};  total= $totalN;  started= $startedN;  optime= ${deviceNow - t0 }")
 		//
 		// DEFs
 		//
@@ -108,7 +110,7 @@ class AppServiceContainer(serviceMgr: ServiceManager) extends AsyncExecContextIn
 		def nextDelay: Long = {
 			val delay = if (changed) {delayStartMs = deviceNow; 50}
 			else {
-				val mult = if (stopping) 2 else 1
+				val mult = if (finishing) 2 else 1
 				val time = deviceNow - delayStartMs
 				if (time < 500) 100 * mult
 				else if (time < 2000) 250 * mult

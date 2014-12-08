@@ -12,27 +12,27 @@ import just4fun.android.core.async.Async._
 
 class ActivityManager extends ActivityLifecycleCallbacks with Loggable {
 	import ActivityState._
-	var app: App = _
 	var serviceMgr: ServiceManager = _
 	protected var activity: WeakRefActivity = WeakRefActivity(null)
 	protected val activities = collection.mutable.WeakHashMap[Activity, Boolean]()
 	protected var state: ActivityState.Value = NONE
 	var reconfiguring = false
+	var lastVisible = false
 	val (aSTART_SERVICES, aVISIBLE_CHANGE, aVISIBLE_POST, aSTOP_SERVICES) = (0, 1, 2, 3)
 
-	def apply(app: App, sManager: ServiceManager) = {
-		this.app = app
+	def init(sManager: ServiceManager) = {
 		serviceMgr = sManager
 	}
 	def isVisible = state == RESUMED
+	def hasUI = activity.isEmpty
 	def exit() {
 		val a = activity.get.orNull
 		activities.foreach { case (_a, b) => if (_a != a && !_a.isFinishing && !_a.isDestroyed) _a.finish() }
 		if (a != null && !a.isFinishing && !a.isDestroyed) activity().finish()
-		else serviceMgr.onStop(true)
+		else serviceMgr.finish(true)
 	}
 	/** Called when all instances have finalized */
-	def isExited(): Boolean = activity.isEmpty || activity().isFinishing
+	def isExited: Boolean = activity.isEmpty || activity().isFinishing
 
 
 	override protected def onActivityCreated(a: Activity, savedState: Bundle): Unit = onStateChange(a, CREATED)
@@ -67,9 +67,10 @@ class ActivityManager extends ActivityLifecycleCallbacks with Loggable {
 		val reason = if (a.isFinishing) "finishing" else if (reconfiguring) "reconfiguring" else ""
 		// exec action on serviceMgr
 		action match {
-			case `aVISIBLE_CHANGE` => serviceMgr.onVisibilityChange()
-			case `aSTART_SERVICES` => serviceMgr.onStart()
-			case `aSTOP_SERVICES` => serviceMgr.onStop()
+			case `aVISIBLE_CHANGE` if lastVisible != isVisible => lastVisible = !lastVisible
+				serviceMgr.onVisibilityChange(lastVisible)
+			case `aSTART_SERVICES` => serviceMgr.start()
+			case `aSTOP_SERVICES` => serviceMgr.finish()
 			case _ =>
 		}
 		logv("onActivityStateChange", s"Activity= ${if (isCurrent) "CURR" else "       " };  state= ${newStt.toString };  reason= ${if (nonEmpty(reason)) reason }")

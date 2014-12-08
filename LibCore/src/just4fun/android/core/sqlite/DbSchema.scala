@@ -30,7 +30,7 @@ trait DbTableService extends AppService {
 			case Failure(e) => failure = e
 		}
 	}
-	override protected def onStop(operationIsOK: Boolean = operation == OK): Unit = {
+	override protected def onStop(operationIsOK: Boolean = operation <= FINISHING): Unit = {
 		close().onComplete {
 			case Success(_) => setStopped
 			case Failure(e) => failure = e
