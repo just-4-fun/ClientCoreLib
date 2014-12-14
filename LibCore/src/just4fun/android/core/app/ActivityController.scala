@@ -3,37 +3,29 @@ package just4fun.android.core.app
 import android.app.Activity
 import android.app.Application.ActivityLifecycleCallbacks
 import android.os.Bundle
+import just4fun.android.core.app.ActivityState._
 import scala.ref.WeakReference
 import just4fun.android.core.utils._
 import project.config.logging.Logger._
 import just4fun.android.core.async._
 import just4fun.android.core.async.Async._
 
-
-class ActivityManager extends ActivityLifecycleCallbacks with Loggable {
-	import ActivityState._
-	var serviceMgr: ServiceManager = _
+class ActivityController(controller: ActivityControllerCallbacks) extends ActivityLifecycleCallbacks with Loggable {
 	protected var activity: WeakRefActivity = WeakRefActivity(null)
 	protected val activities = collection.mutable.WeakHashMap[Activity, Boolean]()
 	protected var state: ActivityState.Value = NONE
 	var reconfiguring = false
 	var lastVisible = false
-	val (aSTART_SERVICES, aVISIBLE_CHANGE, aVISIBLE_POST, aSTOP_SERVICES) = (0, 1, 2, 3)
+	val (aSTART, aVISIBLE_CHANGE, aSTOP) = (0, 1, 2)
 
-	def init(sManager: ServiceManager) = {
-		serviceMgr = sManager
-	}
-	def isVisible = state == RESUMED
-	def hasUI = activity.isEmpty
-	def exit() {
-		val a = activity.get.orNull
-		activities.foreach { case (_a, b) => if (_a != a && !_a.isFinishing && !_a.isDestroyed) _a.finish() }
-		if (a != null && !a.isFinishing && !a.isDestroyed) activity().finish()
-		else serviceMgr.finish(true)
-	}
-	/** Called when all instances have finalized */
-	def isExited: Boolean = activity.isEmpty || activity().isFinishing
+	def isUiVisible: Boolean = state == RESUMED
+	def isUiAvailable: Boolean = !(activity.isEmpty || activity().isFinishing)
 
+	def finish(): Unit = if (isUiAvailable) {
+		val a = activity()
+		activities.foreach { case (_a, b) => if (_a != a && !_a.isFinishing) _a.finish() }
+		a.finish()
+	}
 
 	override protected def onActivityCreated(a: Activity, savedState: Bundle): Unit = onStateChange(a, CREATED)
 	override protected def onActivityStarted(a: Activity): Unit = onStateChange(a, STARTED)
@@ -46,18 +38,19 @@ class ActivityManager extends ActivityLifecycleCallbacks with Loggable {
 	protected def onStateChange(a: Activity, newStt: ActivityState.Value): Unit = {
 		var action = -1
 		newStt match {
-			case CREATED => activity = WeakRefActivity(a)
+			case CREATED => val pva = activity.get.orNull
+				activity = WeakRefActivity(a)
 				activities += (a -> true)
-				if (!reconfiguring) action = aSTART_SERVICES
+				if (!reconfiguring && (pva == null || pva.isFinishing)) action = aSTART
 			case STARTED => activity = WeakRefActivity(a)
 			case RESUMED => activity = WeakRefActivity(a)
 				if (!reconfiguring) action = aVISIBLE_CHANGE
 				reconfiguring = false
 			case PAUSED => if (activity =? a && a.isChangingConfigurations) reconfiguring = true
-			case STOPPED => if (activity =? a && !reconfiguring && !a.isFinishing) action = aVISIBLE_CHANGE
+			case STOPPED => if (activity =? a && !reconfiguring) action = aVISIBLE_CHANGE
 			case DESTROYED => activities -= a
 				if (activity =? a) {
-					if (a.isFinishing) action = aSTOP_SERVICES
+					if (a.isFinishing) action = aSTOP
 					activity = WeakRefActivity(null)
 				}
 			case _ => loge(msg = s"[onActivityStateChange] unknown state: ")
@@ -67,17 +60,18 @@ class ActivityManager extends ActivityLifecycleCallbacks with Loggable {
 		val reason = if (a.isFinishing) "finishing" else if (reconfiguring) "reconfiguring" else ""
 		// exec action on serviceMgr
 		action match {
-			case `aVISIBLE_CHANGE` if lastVisible != isVisible => lastVisible = !lastVisible
-				serviceMgr.onVisibilityChange(lastVisible)
-			case `aSTART_SERVICES` => serviceMgr.start()
-			case `aSTOP_SERVICES` => serviceMgr.finish()
+			case `aVISIBLE_CHANGE` if lastVisible != isUiVisible => lastVisible = !lastVisible
+				controller.onUiVisible(lastVisible)
+			case `aSTART` => controller.onUiStart()
+			case `aSTOP` => controller.onUiFinish()
 			case _ =>
 		}
 		logv("onActivityStateChange", s"Activity= ${if (isCurrent) "CURR" else "       " };  state= ${newStt.toString };  reason= ${if (nonEmpty(reason)) reason }")
 	}
-	
 
-	
+
+
+
 	/* WeakRefActivity HELPER */
 	case class WeakRefActivity(var a: Activity) extends WeakReference[Activity](a) {
 		a = null
@@ -85,5 +79,6 @@ class ActivityManager extends ActivityLifecycleCallbacks with Loggable {
 		def isEmpty = get.isEmpty
 		def notEmpty = !isEmpty
 	}
+
 
 }

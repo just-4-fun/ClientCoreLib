@@ -2,7 +2,7 @@ package just4fun.android.core.sqlite
 
 import android.content.ContentValues
 import android.database.Cursor
-import just4fun.android.core.app.{OperationStatus, AppService}
+import just4fun.android.core.app.{ServiceOperation, AppService}
 import just4fun.android.core.async._
 import just4fun.android.core.async.Async._
 import just4fun.android.core.persist._
@@ -10,7 +10,7 @@ import just4fun.core.schema.formatters.JsonArrayFormatter
 import just4fun.core.schema._
 import just4fun.core.xpression.{SqlContext, XNode, BuildContext, PropXNode}
 import project.config.logging.Logger._
-import OperationStatus._
+import ServiceOperation._
 
 import scala.collection.{GenTraversableOnce => Coll, SortedSet}
 import scala.util.{Failure, Success, Try}
@@ -27,13 +27,13 @@ trait DbTableService extends AppService {
 	override protected def onStart(): Unit = {
 		open().onComplete {
 			case Success(_) => setStarted
-			case Failure(e) => failure = e
+			case Failure(e) => setFailure(e)
 		}
 	}
-	override protected def onStop(operationIsOK: Boolean = operation <= FINISHING): Unit = {
+	override protected def onStop(isOk: Boolean = isOperationOk): Unit = {
 		close().onComplete {
 			case Success(_) => setStopped
-			case Failure(e) => failure = e
+			case Failure(e) => setFailure(e)
 		}
 	}
 }

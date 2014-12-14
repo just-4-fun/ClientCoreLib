@@ -3,72 +3,47 @@ package just4fun.android.core.app
 import just4fun.android.core.utils.TryNLog
 import project.config.logging.Logger._
 
-/* Singleton */
 
-private[app] object ServiceManager {
-	var serviceMgr: ServiceManager = _
+class ServiceController(controller: ServiceControllerCallbacks) extends Loggable with ServiceContainerCallbacks {
 	var activeContainer: AppServiceContainer = _
-}
-
-/* ServiceManager */
-
-class ServiceManager extends Loggable {
-	import just4fun.android.core.app.ServiceManager._
-	serviceMgr = this
-	var app: App = _
-	var activityMgr: ActivityManager = _
 	lazy protected val containers = collection.mutable.Set[AppServiceContainer]()
+	private var counter: Int = 0
 	
-	def init(app: App, aManager: ActivityManager) = {
-		this.app = app
-		activityMgr = aManager
-	}
-	def active = activeContainer != null
+	def isServing: Boolean = activeContainer != null
+	def isFailed: Boolean = activeContainer != null && activeContainer.isFailed
+	def inStandBy: Boolean = containers.isEmpty
 	
-	/* LIFE CYCLE */
-	
-	def start(): Unit = if (!active) {
-		KeepAliveService.initialize(app)
-		activeContainer = new AppServiceContainer(this)
-		logw("", s"${containerName() }   >   APP  START")
+	def start(): Unit = if (!isServing) {
+		counter += 1
+		activeContainer = new AppServiceContainer(this, s"$counter")
 		containers.add(activeContainer)
-		app.onRegisterServices(activeContainer)
+		logw("", s"${containerName() }   >   APP  START")
+		App.config.onRegisterServices(activeContainer)
 		activeContainer.start()
 	}
-	def onVisibilityChange(visible: Boolean): Unit = if (active && !activeContainer.finishing) activeContainer.onVisibilityChange(visible)
-	def finish(force: Boolean = false): Unit =
-		if (active && !activeContainer.finishing && (force || activeContainer.isFailed || !app.liveAfterStop)) {
-			logw("APP", s"${containerName() }   >   APP  STOP")
-			activeContainer.finish()
-			if (!app.liveAfterStop) activeContainer = null
-		}
-	def onFinalized(implicit container: AppServiceContainer): Unit = {
+	def onUiVisible(visible: Boolean): Unit = activeContainer.onVisibilityChange(visible)
+	def finish(): Unit = if (isServing) {
+		logw("APP", s"${containerName() }   >   APP  STOP")
+		activeContainer.finish()
+		activeContainer = null
+	}
+	override def onFinished(container: AppServiceContainer): Unit = {
 		containers.remove(container)
-		if (container == activeContainer) activeContainer = null
-		logw("APP", s"${containerName(container) }   >  APP  FINALIZED           containers.size = ${containers.size };  active ? $active")
+		logw("APP", s"${containerName(container) }   >  APP  UTILIZED           containers.size = ${containers.size };  serving ? $isServing")
 		if (containers.isEmpty) {
 			if (Dependencies.nonEmpty) {
 				loge(msg = s"Dependencies must be empty. Actually contains > ${Dependencies.mkString(", ") }")
 				Dependencies.clear()
 			}
 			logw("APP", s"${" " * 20 }   >   APP  READY TO DIE")
-			if (activityMgr.isExited) {
-				KeepAliveService.finalise()
-				app.finalise()
-			}
-			else start()
+			controller.onServicesFinished()
 		}
 		System.gc()
 	}
-	def isServiceStartFatalError(service: AppService, err: Throwable): Boolean = {
-		TryNLog { app.isServiceStartFatalError(service, err) }.getOrElse(true)
-		// TODO tell UI
-	}
-	def isExited = containers.isEmpty
-	
-	private def containerName(cxt: AppServiceContainer = activeContainer) = s"${" " * (50 - cxt.name.length) }[CXT: ${cxt.name }]"
-}
+	def containerName(cxt: AppServiceContainer = activeContainer) = s"${" " * (50 - cxt.name.length) }[CXT: ${cxt.name }]"
 
+
+}
 
 
 

@@ -13,7 +13,7 @@ package object persist {
 
 
 	/*  DEFAULTS */
-	lazy val defaultCache = App().getSharedPreferences("cache", 0)
+	lazy val defaultCache = App.context.getSharedPreferences("cache", 0)
 
 
 	/* BASE CLASS */

@@ -23,7 +23,7 @@ object InetService {
 
 abstract class InetService extends AppService with NewThreadFeature with FirstPriorityFeature {
 	import just4fun.android.core.inet.InetService._
-	import OperationStatus._
+	import ServiceOperation._
 	ID = "INET"
 	private val LONG_SPAN: Int = 60000
 	private val SHORT_SPAN: Int = 4000
@@ -79,13 +79,13 @@ abstract class InetService extends AppService with NewThreadFeature with FirstPr
 				else if (!_online && isOnline) postCheck(SHORT_SPAN)
 			}
 		}
-		App().registerReceiver(receiver, new IntentFilter(ConnMgr.CONNECTIVITY_ACTION))
+		App.context.registerReceiver(receiver, new IntentFilter(ConnMgr.CONNECTIVITY_ACTION))
 		checkOnline()
 	}
-	override protected def onFinalize(operationIsOK: Boolean = operation <= FINISHING): Unit = {
+	override protected def onUtilize(isOk: Boolean = isOperationOk): Unit = {
 		_online = false
 		listeners.clear()
-		TryNLog { App().unregisterReceiver(receiver) }
+		TryNLog { App.context.unregisterReceiver(receiver) }
 		receiver = null
 		postCheckCancel()
 		future = null
@@ -99,7 +99,7 @@ abstract class InetService extends AppService with NewThreadFeature with FirstPr
 		future = postUI("Check Online", checkSpan) { checkOnline() }
 	}
 	private def postCheckCancel() = if (future != null) future.cancel()
-	private def connMgr = App().getSystemService(Context.CONNECTIVITY_SERVICE).asInstanceOf[ConnMgr]
+	private def connMgr = App.context.getSystemService(Context.CONNECTIVITY_SERVICE).asInstanceOf[ConnMgr]
 	private def isReallyOnline: Boolean = {
 		val netInfo: NetworkInfo = connMgr.getActiveNetworkInfo
 		netInfo != null && netInfo.isConnected

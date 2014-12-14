@@ -2,13 +2,13 @@ package just4fun.android.core.sqlite
 
 import android.content.ContentValues
 import android.database.Cursor
-import just4fun.android.core.app.{OperationStatus, ParallelThreadFeature, App, AppService}
+import just4fun.android.core.app.{ServiceOperation, ParallelThreadFeature, App, AppService}
 import android.database.sqlite.{SQLiteException, SQLiteQueryBuilder, SQLiteDatabase, SQLiteOpenHelper}
 import just4fun.android.core.async.Async._
 import just4fun.android.core.async.FutureExt
 import just4fun.android.core.utils._
 import project.config.logging.Logger._
-import OperationStatus._
+import ServiceOperation._
 
 import scala.util.{Failure, Try, Success}
 
@@ -17,16 +17,16 @@ import scala.util.{Failure, Try, Success}
 class DbService(val name: String = "main") extends Db with AppService with ParallelThreadFeature {
 
 	override protected def onInitialize(): Unit = {
-		val dbHelper = new SQLiteOpenHelper(App(), name, null, 1) {
+		val dbHelper = new SQLiteOpenHelper(App.context, name, null, 1) {
 			override def onCreate(db: SQLiteDatabase): Unit = {}
 			override def onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int): Unit = {}
 		}
 		db = dbHelper.getWritableDatabase // SQLiteException if the database cannot be opened for writing
 	}
-	override protected def isStarted(operationIsOK: Boolean = operation == NORMAL) = db != null && db.isOpen
-	override protected def onStop(operationIsOK: Boolean = operation <= FINISHING): Unit = asyncExecContext.quit(true)
-	override protected def isStopped(operationIsOK: Boolean = operation <= FINISHING) = asyncExecContext.isQuit
-	override protected def onFinalize(operationIsOK: Boolean = operation <= FINISHING): Unit = { if (isStarted()) db.close(); db = null }
+	override protected def isStarted(isOk: Boolean = isOperationOk) = db != null && db.isOpen
+	override protected def onStop(isOk: Boolean = isOperationOk): Unit = asyncExecContext.quit(true)
+	override protected def isStopped(isOk: Boolean = isOperationOk) = asyncExecContext.isQuit
+	override protected def onUtilize(isOk: Boolean = isOperationOk): Unit = { if (isStarted()) db.close(); db = null }
 }
 
 

@@ -17,9 +17,9 @@ trait AsyncExecContextInitializer extends Initializer {self: Loggable =>
 		}
 		super.preInitialize()
 	}
-	abstract override def postFinalize() = {
+	abstract override def postUtilize() = {
 		_execCxt.quit()
 		_execCxt = null
-		super.postFinalize()
+		super.postUtilize()
 	}
 }
